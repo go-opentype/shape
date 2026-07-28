@@ -88,7 +88,7 @@ func Shape(face *opentype.Face, text string, opts Options) []Glyph {
 	// source cluster of every glyph so the joining masks can be rebuilt on the
 	// decomposed run and the output can be mapped back to the text.
 	if g := font.GSUB(); g != nil {
-		run, clusters = shapeGSUB(g, run, clusters, script, forms, opts.Features)
+		run, clusters = shapeGSUB(g, run, clusters, runes, script, forms, opts.Features)
 	}
 
 	// Base advances (font units) for the substituted run.
@@ -136,8 +136,12 @@ func Shape(face *opentype.Face, text string, opts Options) []Glyph {
 // the joining forms isol/init/medi/fina — rebuilt against the decomposed run
 // from each glyph's source-rune joining form — followed by rlig/liga/calt. The
 // default path applies ccmp/liga/clig over the whole run. User features follow,
-// over the whole run.
-func shapeGSUB(g *opentype.GSUB, run []opentype.GlyphIndex, clusters []int, script string, forms []bidi.JoinForm, user []string) ([]opentype.GlyphIndex, []int) {
+// over the whole run. An Indic script routes to the syllable-based Indic shaper
+// (shapeIndic), which needs the source runes for categorization and reordering.
+func shapeGSUB(g *opentype.GSUB, run []opentype.GlyphIndex, clusters []int, runes []rune, script string, forms []bidi.JoinForm, user []string) ([]opentype.GlyphIndex, []int) {
+	if cfg, ok := indicConfigForTag(script); ok {
+		return shapeIndic(g, run, clusters, runes, cfg, user)
+	}
 	if script == "arab" {
 		// ccmp first, tracked, so the joining masks align to the (possibly
 		// decomposed) run rather than the original letters.
@@ -159,32 +163,47 @@ func shapeGSUB(g *opentype.GSUB, run []opentype.GlyphIndex, clusters []int, scri
 }
 
 // resolveScript picks the shaping script: an explicit "arab" (case-insensitive)
-// forces Arabic; an empty value auto-detects Arabic from the runes; anything
-// else (including "latn"/"dflt") selects the default shaper ("dflt").
+// forces Arabic and an explicit Indic tag (old "deva" or v2 "dev2" form) forces
+// that Indic script; an empty value auto-detects Arabic, then Indic, from the
+// runes; anything else (including "latn"/"dflt") selects the default shaper.
 func resolveScript(want string, runes []rune) string {
-	switch strings.ToLower(want) {
-	case "arab":
+	if strings.ToLower(want) == "arab" {
 		return "arab"
-	case "":
+	}
+	if want == "" {
 		if hasArabic(runes) {
 			return "arab"
 		}
-		return "dflt"
-	default:
+		if cfg, ok := indicConfigForRunes(runes); ok {
+			return cfg.tag
+		}
 		return "dflt"
 	}
+	if cfg, ok := indicConfigForTag(want); ok {
+		return cfg.tag
+	}
+	return "dflt"
 }
 
 // gposFeatures returns the GPOS feature tags for the run: kern/mark/mkmk/curs
 // for Arabic, kern/mark for the default path, plus any user features.
 func gposFeatures(script string, user []string) []string {
 	var feats []string
-	if script == "arab" {
+	switch {
+	case script == "arab":
 		feats = []string{"kern", "mark", "mkmk", "curs"}
-	} else {
+	case isIndicTag(script):
+		feats = []string{"kern", "dist", "abvm", "blwm", "mark", "mkmk"}
+	default:
 		feats = []string{"kern", "mark"}
 	}
 	return append(feats, user...)
+}
+
+// isIndicTag reports whether script is a canonical Indic script tag.
+func isIndicTag(script string) bool {
+	_, ok := indicConfigs[script]
+	return ok
 }
 
 // appendUser appends each user feature tag as a whole-run FeatureApp.
