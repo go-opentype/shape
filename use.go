@@ -25,10 +25,15 @@ package shape
 //     is reordered, then the presentation GSUB features and the GPOS positioning
 //     features, reusing this package's GSUB/GPOS helpers.
 //
-// Scope note: this is the general USE model. Per-script quirks that HarfBuzz
-// special-cases (Sakot handling, split-vowel decomposition, pref/rphf
-// feature-based reordering, dotted-circle insertion for defective clusters) are
-// not reproduced; only property-based reordering (R, VPre, VMPre) is performed.
+// Beyond property-based reordering (R, VPre, VMPre) this implements the four
+// per-script behaviours HarfBuzz special-cases: sakot handling (a consonant, a
+// Tai Tham sakot or halant, and a following consonant stay one cluster, across
+// an optional ZWJ/ZWNJ), split-vowel decomposition (two-part dependent vowels
+// are split into components before shaping so each part is classified and
+// reordered on its own), feature-based reordering (a consonant the pref feature
+// substitutes reorders before the base and a cluster head the rphf feature
+// ligates into a repha reorders after it) and dotted-circle insertion for
+// defective clusters (a cluster of bare combining marks gets a U+25CC base).
 
 import "github.com/go-opentype/opentype"
 
@@ -345,7 +350,11 @@ func useSegment(cats []useCat) [][2]int {
 		case ucS:
 			i = scanSymbol(cats, i)
 		default:
-			i = scanIndependent(cats, i)
+			if isDefectiveLead(cats[i]) {
+				i = scanBroken(cats, i)
+			} else {
+				i = scanIndependent(cats, i)
+			}
 		}
 		for i < n && (cats[i] == ucZWJ || cats[i] == ucZWNJ || cats[i] == ucCGJ) {
 			i++
@@ -372,20 +381,31 @@ func scanStandard(cats []useCat, i int) int {
 	}
 	j = scanMods(cats, j)
 	for j < n {
-		if cats[j] == ucH && j+1 < n && (cats[j+1] == ucB || cats[j+1] == ucGB) {
-			j += 2
-			if j < n && cats[j] == ucVS {
-				j++
+		if cats[j] == ucH || cats[j] == ucSk {
+			// A halant or a Tai Tham sakot (Sk) joins this consonant to the
+			// following one — across an optional ZWJ/ZWNJ that selects the
+			// joining form — so the whole run stays a single cluster.
+			k := j + 1
+			if k < n && (cats[k] == ucZWJ || cats[k] == ucZWNJ) {
+				k++
 			}
-			j = scanMods(cats, j)
-		} else if cats[j] == ucSUB {
+			if k < n && (cats[k] == ucB || cats[k] == ucGB) {
+				j = k + 1
+				if j < n && cats[j] == ucVS {
+					j++
+				}
+				j = scanMods(cats, j)
+				continue
+			}
+		}
+		if cats[j] == ucSUB {
 			j++
 			j = scanMods(cats, j)
-		} else {
-			break
+			continue
 		}
+		break
 	}
-	if j < n && (cats[j] == ucH || cats[j] == ucRK) {
+	if j < n && (cats[j] == ucH || cats[j] == ucSk || cats[j] == ucRK) {
 		return j + 1
 	}
 	j = scanOpt(cats, j, ucMPre)
@@ -460,6 +480,36 @@ func scanIndependent(cats []useCat, i int) int {
 	return j
 }
 
+// scanBroken consumes a defective (broken) cluster starting at i: a maximal run
+// of combining marks with no base to hang on. Such a cluster is where a dotted
+// circle is later inserted, so the marks have a base to attach to.
+func scanBroken(cats []useCat, i int) int {
+	n := len(cats)
+	j := i
+	for j < n && (isDefectiveLead(cats[j]) || cats[j] == ucVS) {
+		j++
+	}
+	return j
+}
+
+// isDefectiveLead reports whether a category, appearing at the head of a
+// cluster, makes that cluster defective: it is a dependent mark (halant, sakot,
+// consonant/vowel modifier, medial, final, subjoined, vowel or vowel modifier)
+// with no base of its own. A defective cluster receives an inserted dotted
+// circle to act as its base.
+func isDefectiveLead(c useCat) bool {
+	switch c {
+	case ucH, ucSk, ucHN, ucRK,
+		ucCM, ucCMAbv, ucCMBlw,
+		ucF, ucFAbv, ucFBlw, ucFPst, ucFM,
+		ucM, ucMPre, ucMAbv, ucMBlw, ucMPst, ucSUB,
+		ucV, ucVPre, ucVAbv, ucVBlw, ucVPst,
+		ucVM, ucVMPre, ucVMAbv, ucVMBlw, ucVMPst:
+		return true
+	}
+	return false
+}
+
 // useSyllableIDs assigns each rune index the id of the cluster it belongs to.
 func useSyllableIDs(cats []useCat) []int {
 	ids := make([]int, len(cats))
@@ -471,20 +521,29 @@ func useSyllableIDs(cats []useCat) []int {
 	return ids
 }
 
-// useReorder performs USE property-based reordering: within each cluster the
-// pre-base vowel modifiers and pre-base vowels move ahead of the base and a
-// leading repha moves after it. It permutes the glyph run and its clusters,
-// using each glyph's source-rune category (cats) and cluster id (syll).
-func useReorder(run []opentype.GlyphIndex, clusters []int, cats []useCat, syll []int) ([]opentype.GlyphIndex, []int) {
+// useReorder performs USE reordering. Within each cluster the pre-base vowel
+// modifiers (VMPre) and pre-base vowels (VPre) move ahead of the base, any
+// consonant the pref feature turned into a pre-base form (pref[i]) moves just
+// before the base, and a leading repha — a static Consonant_Preceding_Repha (R)
+// or a consonant the rphf feature ligated into a repha (rphf[i]) — moves after
+// the base. It permutes the glyph run and its tracking positions, keyed by each
+// glyph's source category (cats), cluster id (syll) and per-position feature
+// flags, all indexed through pos (the tracked source position of glyph j).
+func useReorder(run []opentype.GlyphIndex, pos []int, cats []useCat, syll []int, pref, rphf []bool) ([]opentype.GlyphIndex, []int) {
 	n := len(run)
 	if n == 0 {
-		return run, clusters
+		return run, pos
 	}
 	gc := make([]useCat, n)
 	gsy := make([]int, n)
+	gpref := make([]bool, n)
+	grphf := make([]bool, n)
 	for j := 0; j < n; j++ {
-		gc[j] = cats[clusters[j]]
-		gsy[j] = syll[clusters[j]]
+		p := pos[j]
+		gc[j] = cats[p]
+		gsy[j] = syll[p]
+		gpref[j] = pref[p]
+		grphf[j] = rphf[p]
 	}
 	order := make([]int, 0, n)
 	for a := 0; a < n; {
@@ -492,45 +551,50 @@ func useReorder(run []opentype.GlyphIndex, clusters []int, cats []useCat, syll [
 		for b < n && gsy[b] == gsy[a] {
 			b++
 		}
-		order = append(order, reorderRange(gc, a, b)...)
+		order = append(order, reorderRange(gc, gpref, grphf, a, b)...)
 		a = b
 	}
 	nr := make([]opentype.GlyphIndex, n)
-	nc := make([]int, n)
+	np := make([]int, n)
 	for k, idx := range order {
 		nr[k] = run[idx]
-		nc[k] = clusters[idx]
+		np[k] = pos[idx]
 	}
-	return nr, nc
+	return nr, np
 }
 
 // reorderRange returns the indices of [a,b) in reordered order: pre-base vowel
-// modifiers, then pre-base vowels, then the remaining glyphs (with a leading
-// repha shifted past its base).
-func reorderRange(gc []useCat, a, b int) []int {
-	var vmpre, vpre, rest []int
+// modifiers, then pre-base vowels, then any pref-substituted (pre-base) glyphs,
+// then the remaining glyphs (with a leading repha shifted past its base).
+func reorderRange(gc []useCat, pref, rphf []bool, a, b int) []int {
+	var vmpre, vpre, prefc, rest []int
 	for i := a; i < b; i++ {
-		switch gc[i] {
-		case ucVMPre:
+		switch {
+		case gc[i] == ucVMPre:
 			vmpre = append(vmpre, i)
-		case ucVPre:
+		case gc[i] == ucVPre:
 			vpre = append(vpre, i)
+		case pref[i]:
+			prefc = append(prefc, i)
 		default:
 			rest = append(rest, i)
 		}
 	}
-	rest = rephaReorder(gc, rest)
+	rest = rephaReorder(gc, rphf, rest)
 	out := make([]int, 0, b-a)
 	out = append(out, vmpre...)
 	out = append(out, vpre...)
+	out = append(out, prefc...)
 	return append(out, rest...)
 }
 
-// rephaReorder moves a leading repha (R) to just after the first following base
-// in rest, mutating and returning rest. A rest that does not start with a repha,
-// or has no base after it, is returned unchanged.
-func rephaReorder(gc []useCat, rest []int) []int {
-	if len(rest) == 0 || gc[rest[0]] != ucR {
+// rephaReorder moves a leading repha to just after the first following base in
+// rest, mutating and returning rest. The head is a repha when it is a static
+// Consonant_Preceding_Repha (R) or the rphf feature fired on it (rphf[rest[0]]).
+// A rest that does not start with a repha, or has no base after it, is returned
+// unchanged.
+func rephaReorder(gc []useCat, rphf []bool, rest []int) []int {
+	if len(rest) == 0 || !(gc[rest[0]] == ucR || rphf[rest[0]]) {
 		return rest
 	}
 	bi := -1
@@ -549,19 +613,172 @@ func rephaReorder(gc []useCat, rest []int) []int {
 	return rest
 }
 
-// shapeUSE runs the USE substitution and reordering pipeline over a logical-order
-// glyph run: classify each rune, apply the default/basic GSUB features, reorder
-// (pre-base vowels/modifiers before the base, repha after it), then apply the
-// presentation GSUB features. It is called from shapeGSUB with a non-nil GSUB and
-// returns the substituted, reordered run and its clusters; the caller applies
-// GPOS and emits the glyphs.
-func shapeUSE(g *opentype.GSUB, runes []rune, run []opentype.GlyphIndex, clusters []int, user []string) ([]opentype.GlyphIndex, []int) {
-	cats := make([]useCat, len(runes))
+// useSplitVowels maps a two-part USE dependent vowel to the sequence of
+// single-part components it decomposes into (fully expanded, so no component is
+// itself splittable). These are the canonical decompositions the USE model
+// applies before shaping — the Tibetan and Balinese two-part vowel signs — plus
+// the two Chakma vowels HarfBuzz decomposes by hand. Splitting lets each part be
+// classified and reordered on its own, so a leading (pre-base) part moves ahead
+// of the base while the trailing part stays after it. (Sinhala's two-part vowels
+// are decomposed by the dedicated Indic shaper, which owns that script.)
+var useSplitVowels = map[rune][]rune{
+	0x0F73:  {0x0F71, 0x0F72},   // TIBETAN VOWEL SIGN II
+	0x0F75:  {0x0F71, 0x0F74},   // TIBETAN VOWEL SIGN UU
+	0x0F76:  {0x0FB2, 0x0F80},   // TIBETAN VOWEL SIGN VOCALIC R
+	0x0F78:  {0x0FB3, 0x0F80},   // TIBETAN VOWEL SIGN VOCALIC L
+	0x0F81:  {0x0F71, 0x0F80},   // TIBETAN VOWEL SIGN REVERSED II
+	0x1B3B:  {0x1B3A, 0x1B35},   // BALINESE VOWEL SIGN RA REPA TEDUNG
+	0x1B3D:  {0x1B3C, 0x1B35},   // BALINESE VOWEL SIGN LA LENGA TEDUNG
+	0x1B40:  {0x1B3E, 0x1B35},   // BALINESE VOWEL SIGN TALING TEDUNG
+	0x1B41:  {0x1B3F, 0x1B35},   // BALINESE VOWEL SIGN TALING REPA TEDUNG
+	0x1B43:  {0x1B42, 0x1B35},   // BALINESE VOWEL SIGN PEPET TEDUNG
+	0x1112E: {0x11131, 0x11127}, // CHAKMA VOWEL SIGN O
+	0x1112F: {0x11132, 0x11127}, // CHAKMA VOWEL SIGN AU
+}
+
+// decomposeUSE expands the split vowels of runes into their components,
+// returning the decomposed rune sequence and, per component, the index of the
+// source rune it came from (both parts of a split vowel share the source rune's
+// index).
+func decomposeUSE(runes []rune) (dr []rune, src []int) {
+	dr = make([]rune, 0, len(runes))
+	src = make([]int, 0, len(runes))
 	for i, r := range runes {
+		if comp, ok := useSplitVowels[r]; ok {
+			for _, c := range comp {
+				dr = append(dr, c)
+				src = append(src, i)
+			}
+			continue
+		}
+		dr = append(dr, r)
+		src = append(src, i)
+	}
+	return dr, src
+}
+
+// insertDottedCircles inserts a U+25CC (dotted circle) at the head of every
+// defective cluster — one whose leading category is a bare combining mark — so
+// the marks have a base, matching HarfBuzz. It returns the augmented runes,
+// their source indices and their categories; when no cluster is defective the
+// inputs are returned unchanged.
+func insertDottedCircles(dr []rune, src []int, cats []useCat) ([]rune, []int, []useCat) {
+	insert := map[int]bool{}
+	for _, seg := range useSegment(cats) {
+		if isDefectiveLead(cats[seg[0]]) {
+			insert[seg[0]] = true
+		}
+	}
+	if len(insert) == 0 {
+		return dr, src, cats
+	}
+	dcCat := useClass(dottedCircle)
+	ndr := make([]rune, 0, len(dr)+len(insert))
+	nsrc := make([]int, 0, len(dr)+len(insert))
+	ncats := make([]useCat, 0, len(dr)+len(insert))
+	for i := range dr {
+		if insert[i] {
+			ndr = append(ndr, dottedCircle)
+			nsrc = append(nsrc, src[i])
+			ncats = append(ncats, dcCat)
+		}
+		ndr = append(ndr, dr[i])
+		nsrc = append(nsrc, src[i])
+		ncats = append(ncats, cats[i])
+	}
+	return ndr, nsrc, ncats
+}
+
+// dottedCircle is U+25CC, the base a defective cluster's marks attach to.
+const dottedCircle = 0x25CC
+
+// detectUSEFeatures probes the pre-base (pref) and repha (rphf) GSUB features on
+// each cluster of the cmap glyph run and returns, per glyph position, whether
+// pref substituted that glyph (it becomes a pre-base form and reorders before
+// the base) and whether rphf fired at the cluster head (it becomes a repha and
+// reorders after the base).
+func detectUSEFeatures(g *opentype.GSUB, run []opentype.GlyphIndex, cats []useCat) (pref, rphf []bool) {
+	pref = make([]bool, len(run))
+	rphf = make([]bool, len(run))
+	for _, seg := range useSegment(cats) {
+		s, e := seg[0], seg[1]
+		sub := run[s:e]
+		cl := make([]int, e-s)
+		for i := range cl {
+			cl[i] = s + i
+		}
+		// pref may fire at any consonant of the cluster; rphf only at its head.
+		for c := range firedClusters(g, sub, cl, nil, "pref") {
+			pref[c] = true
+		}
+		head := make([]bool, e-s)
+		head[0] = true
+		if firedClusters(g, sub, cl, head, "rphf")[s] {
+			rphf[s] = true
+		}
+	}
+	return pref, rphf
+}
+
+// firedClusters applies feature tag — restricted to mask, or over the whole
+// cluster when mask is nil — to sub (a cluster's glyphs, whose source positions
+// are cl) and returns the set of source positions whose glyph the feature
+// substituted: a position whose glyph changed, or one a ligature consumed. It is
+// how the pre-base (pref) and repha (rphf) reordering learn which glyphs to move.
+func firedClusters(g *opentype.GSUB, sub []opentype.GlyphIndex, cl []int, mask []bool, tag string) map[int]bool {
+	out, oc := g.ApplyMaskedTracked(append([]opentype.GlyphIndex(nil), sub...), append([]int(nil), cl...), []opentype.FeatureApp{{Tag: tag, Positions: mask}})
+	in := make(map[int]opentype.GlyphIndex, len(cl))
+	for i, c := range cl {
+		in[c] = sub[i]
+	}
+	fired := map[int]bool{}
+	present := map[int]bool{}
+	for k, c := range oc {
+		present[c] = true
+		if in[c] != out[k] {
+			fired[c] = true
+		}
+	}
+	for _, c := range cl {
+		if !present[c] {
+			fired[c] = true
+		}
+	}
+	return fired
+}
+
+// shapeUSE runs the full USE substitution and reordering pipeline over a
+// logical-order run: split-vowel decomposition, classification, dotted-circle
+// insertion for defective clusters, the default/basic GSUB features, feature-
+// and property-based reordering (pre-base vowels/modifiers and pref consonants
+// before the base, static or rphf repha after it), then the presentation GSUB
+// features. It is called from shapeGSUB with a non-nil GSUB, maps runes to
+// glyphs through font (decomposition and dotted circles introduce new runes),
+// and returns the substituted, reordered run with clusters mapped back to the
+// original source-rune indices; the caller applies GPOS and emits the glyphs.
+func shapeUSE(font *opentype.Font, g *opentype.GSUB, runes []rune, user []string) ([]opentype.GlyphIndex, []int) {
+	dr, src := decomposeUSE(runes)
+	cats := make([]useCat, len(dr))
+	for i, r := range dr {
 		cats[i] = useClass(r)
 	}
+	dr, src, cats = insertDottedCircles(dr, src, cats)
+	run := make([]opentype.GlyphIndex, len(dr))
+	for i, r := range dr {
+		run[i], _ = font.GlyphIndex(r)
+	}
 	syll := useSyllableIDs(cats)
-	run, clusters = g.ApplyMaskedTracked(run, clusters, useStageI())
-	run, clusters = useReorder(run, clusters, cats, syll)
-	return g.ApplyMaskedTracked(run, clusters, useStageII(user))
+	pref, rphf := detectUSEFeatures(g, run, cats)
+	pos := make([]int, len(dr))
+	for i := range pos {
+		pos[i] = i
+	}
+	run, pos = g.ApplyMaskedTracked(run, pos, useStageI())
+	run, pos = useReorder(run, pos, cats, syll, pref, rphf)
+	run, pos = g.ApplyMaskedTracked(run, pos, useStageII(user))
+	clusters := make([]int, len(pos))
+	for i, p := range pos {
+		clusters[i] = src[p]
+	}
+	return run, clusters
 }

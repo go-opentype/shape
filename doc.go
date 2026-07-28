@@ -96,9 +96,10 @@
 // Arabic, Indic, the Universal Shaping Engine (USE) and Latin/default (Latin,
 // Cyrillic, Greek, CJK, ...) shaping are implemented, plus Egyptian Hieroglyph
 // quadrat layout and vertical writing mode. USE covers the complex scripts that
-// lack a bespoke shaper (Thai, Lao, Khmer, Myanmar, Tibetan, Javanese, ...); it
-// is the general USE model, so per-script quirks HarfBuzz special-cases are not
-// reproduced (see "USE" below). Cluster indices are exact for one-to-one
+// lack a bespoke shaper (Thai, Lao, Khmer, Myanmar, Tibetan, Javanese, ...),
+// including the per-script behaviours sakot handling, split-vowel decomposition,
+// pref/rphf feature-based reordering and dotted-circle insertion (see "USE"
+// below). Cluster indices are exact for one-to-one
 // substitutions (the Arabic positional forms) and best-effort, monotonic, when a
 // substitution changes the run length (ligatures, decomposition, Indic and USE
 // reordering).
@@ -150,13 +151,18 @@
 // GSUB features run (isol, init, medi, fina, abvs, blws, haln, pres, psts) and
 // GPOS applies kern, dist, abvm, blwm, mark and mkmk.
 //
-// This is the general USE model. Only property-based reordering is performed —
-// pre-base vowels (VPre) and pre-base vowel modifiers (VMPre) move ahead of the
-// base and a leading repha (R) moves after it. Per-script quirks HarfBuzz
-// special-cases (Sakot handling, split-vowel decomposition, pref/rphf
-// feature-based reordering and dotted-circle insertion for defective clusters)
-// are not reproduced here; the ten dedicated-shaper Indic scripts (Devanagari,
-// Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada, Malayalam and
-// Sinhala), which do reproduce those quirks, are routed to the Indic shaper
-// rather than USE.
+// Reordering is both property- and feature-based: pre-base vowels (VPre) and
+// pre-base vowel modifiers (VMPre) move ahead of the base, a consonant the pref
+// feature turns into a pre-base form moves just before it, and a leading repha —
+// a static Consonant_Preceding_Repha (R) or a cluster head the rphf feature
+// ligates into a repha — moves after it. The other per-script behaviours are
+// reproduced too: a sakot (the Tai Tham U+1A60, and the general Sakot class) or
+// a halant joins a consonant to the following one across an optional ZWJ/ZWNJ so
+// they stay one cluster; two-part dependent vowels (Tibetan, Balinese and the
+// Chakma pair) are decomposed into their components before shaping so each part
+// is classified and positioned on its own; and a defective cluster of bare
+// combining marks receives an inserted U+25CC dotted-circle base. The ten
+// dedicated-shaper Indic scripts (Devanagari, Bengali, Gurmukhi, Gujarati,
+// Oriya, Tamil, Telugu, Kannada, Malayalam and Sinhala) are routed to the Indic
+// shaper rather than USE.
 package shape
