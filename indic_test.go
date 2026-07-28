@@ -592,6 +592,112 @@ func TestIndicDottedCircle(t *testing.T) {
 	}
 }
 
+// TestIndicRephModesConfig pins the per-script repha encoding mode and final
+// position: Telugu is explicit (Ra + halant + ZWJ), Malayalam is a logical-order
+// repha code point, every other script is implicit; and each named reph slot is
+// exactly its reorder ladder position.
+func TestIndicRephModesConfig(t *testing.T) {
+	cases := []struct {
+		tag  string
+		mode rephMode
+		pos  rephPos
+	}{
+		{"deva", rephImplicit, rephBeforePost},
+		{"beng", rephImplicit, rephAfterSub},
+		{"guru", rephImplicit, rephBeforeSub},
+		{"gujr", rephImplicit, rephBeforePost},
+		{"orya", rephImplicit, rephAfterMain},
+		{"taml", rephImplicit, rephAfterPost},
+		{"telu", rephExplicit, rephAfterPost},
+		{"knda", rephImplicit, rephAfterPost},
+		{"mlym", rephLogRepha, rephAfterMain},
+		{"sinh", rephImplicit, rephAfterMain},
+	}
+	for _, c := range cases {
+		cfg := indicConfigs[c.tag]
+		if cfg.rephMode != c.mode || cfg.rephPos != c.pos {
+			t.Errorf("%s reph mode=%d pos=%d, want mode=%d pos=%d",
+				c.tag, cfg.rephMode, cfg.rephPos, c.mode, c.pos)
+		}
+	}
+	if uint8(rephAfterMain) != posAfterMain || uint8(rephBeforeSub) != posBeforeSub ||
+		uint8(rephAfterSub) != posAfterSub || uint8(rephBeforePost) != posBeforePost ||
+		uint8(rephAfterPost) != posAfterPost {
+		t.Error("reph slot constants do not match their ladder positions")
+	}
+}
+
+// TestIndicExplicitReph shapes Telugu Ra + virama + ZWJ + ka (U+0C30 U+0C4D
+// U+200D U+0C15) with a font whose rphf ligates the explicit Ra + halant + ZWJ
+// into a reph glyph. The explicit-repha mode must detect it (the plain Ra +
+// halant form is not a Telugu reph), and the ligated reph must reorder to
+// Telugu's after-post slot, past the base.
+func TestIndicExplicitReph(t *testing.T) {
+	const ra, virama, zwj, ka = 0x0C30, 0x0C4D, 0x200D, 0x0C15
+	cmap := map[rune]uint16{ra: 1, virama: 2, zwj: 3, ka: 4}
+	// rphf: Ra(1) + virama(2) + ZWJ(3) -> reph(5).
+	rphf := buildLookup(4, [][]byte{
+		buildLigatureSubst(buildCoverage1(1), [][]byte{
+			buildLigatureSet([][]byte{buildLigature(5, 2, 3)}),
+		}),
+	})
+	f := indicSynthFont(t, cmap, 6, gsubOneFeature("rphf", [][]byte{rphf}, []uint16{0}))
+	got := Shape(f.NewFace(64), string([]rune{ra, virama, zwj, ka}), Options{Script: "tel2"})
+	reph := visualIndexOfCluster(got, 0) // the reph derives from the Ra (rune 0)
+	base := visualIndexOfCluster(got, 3) // base ka (rune 3)
+	if reph < 0 || base < 0 || reph <= base {
+		t.Fatalf("explicit reph not reordered after base: reph@%d base@%d %+v", reph, base, got)
+	}
+	if got[reph].GID != 5 {
+		t.Errorf("explicit reph did not ligate: GID %d, want 5 %+v", got[reph].GID, got)
+	}
+}
+
+// TestIndicExplicitRephNotZWJ shapes the same Telugu cluster without the ZWJ
+// (Ra + virama + ka): the explicit mode must not treat it as a reph, so the Ra
+// stays a pre-base consonant ahead of the base rather than reordering to the
+// after-post reph slot.
+func TestIndicExplicitRephNotZWJ(t *testing.T) {
+	const ra, virama, ka = 0x0C30, 0x0C4D, 0x0C15
+	cmap := map[rune]uint16{ra: 1, virama: 2, ka: 3}
+	rphf := buildLookup(4, [][]byte{
+		buildLigatureSubst(buildCoverage1(1), [][]byte{
+			buildLigatureSet([][]byte{buildLigature(5, 2)}),
+		}),
+	})
+	f := indicSynthFont(t, cmap, 6, gsubOneFeature("rphf", [][]byte{rphf}, []uint16{0}))
+	got := Shape(f.NewFace(64), string([]rune{ra, virama, ka}), Options{Script: "tel2"})
+	ra0 := visualIndexOfCluster(got, 0)
+	base := visualIndexOfCluster(got, 2)
+	if ra0 < 0 || base < 0 || ra0 >= base {
+		t.Errorf("non-ZWJ Telugu Ra should stay before base: ra@%d base@%d %+v", ra0, base, got)
+	}
+}
+
+// TestIndicLogRepha shapes Malayalam repha + ka (U+0D4E U+0D15): the logical-
+// order repha is a dedicated code point that needs no ligature. It must be
+// detected as a reph and reorder to Malayalam's after-main slot, past the base,
+// even with a font that has no rphf feature.
+func TestIndicLogRepha(t *testing.T) {
+	const repha, ka = 0x0D4E, 0x0D15
+	cmap := map[rune]uint16{repha: 1, ka: 2}
+	f := indicSynthFont(t, cmap, 3, gsubOneFeature("pres", [][]byte{
+		buildLookup(1, [][]byte{buildSingle1(0, buildCoverage1(90))}), // inert no-op
+	}, []uint16{0}))
+	got := Shape(f.NewFace(64), string([]rune{repha, ka}), Options{Script: "mlm2"})
+	if len(got) != 2 {
+		t.Fatalf("logical repha changed the run length: %+v", got)
+	}
+	ri := visualIndexOfCluster(got, 0) // the repha (rune 0)
+	ki := visualIndexOfCluster(got, 1) // base ka (rune 1)
+	if ri < 0 || ki < 0 || ri <= ki {
+		t.Errorf("logical repha not reordered after base: repha@%d base@%d %+v", ri, ki, got)
+	}
+	if got[ri].GID != 1 {
+		t.Errorf("logical repha glyph changed: GID %d, want 1 %+v", got[ri].GID, got)
+	}
+}
+
 // TestIndicSinhalaRouting confirms Sinhala routes to the Indic shaper (its
 // dedicated model) rather than USE, both when auto-detected and when tagged.
 func TestIndicSinhalaRouting(t *testing.T) {

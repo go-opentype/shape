@@ -18,8 +18,10 @@ import (
 //     signs) into their canonical components, so each part reorders to its own
 //     position (decomposeIndic).
 //  2. Categorize each rune (indicRange table, from cmd/genindic) into a category
-//     and a raw positional category, find the reph (a leading Ra + halant) and
-//     the base consonant with the script's base-position model, and — when the
+//     and a raw positional category, find the reph (the script's encoding: the
+//     implicit Ra + halant, Telugu's explicit Ra + halant + ZWJ, or Malayalam's
+//     logical-order U+0D4E repha) and the base consonant with the script's
+//     base-position model, and — when the
 //     cluster is defective (opens with a dependent mark and has no base) — insert
 //     a dotted circle to carry the marks (analyzeIndic).
 //  3. Initial reordering: a stable sort by ladder position moves pre-base matras
@@ -95,31 +97,61 @@ const (
 	basePosLastSinhala
 )
 
+// rephPos is the reorder-ladder slot a reph glyph moves to in the final
+// reordering pass. HarfBuzz assigns one per script — Devanagari/Gujarati
+// BeforePost, Bengali AfterSub, Gurmukhi BeforeSub, Oriya/Malayalam/Sinhala
+// AfterMain, Tamil/Telugu/Kannada AfterPost. Each value is exactly the ladder
+// position of its slot, so a rephPos is used directly as a reorder key.
+type rephPos uint8
+
+const (
+	rephAfterMain  = rephPos(posAfterMain)
+	rephBeforeSub  = rephPos(posBeforeSub)
+	rephAfterSub   = rephPos(posAfterSub)
+	rephBeforePost = rephPos(posBeforePost)
+	rephAfterPost  = rephPos(posAfterPost)
+)
+
+// rephMode is how a script encodes the reph the shaper reorders. Most scripts
+// use the implicit Ra + halant form; Telugu uses an explicit Ra + halant + ZWJ
+// sequence; Malayalam encodes a dedicated repha code point (U+0D4E) in logical
+// order and needs no ligature to reorder it.
+type rephMode uint8
+
+const (
+	rephImplicit rephMode = iota // a leading Ra + halant (the common reph)
+	rephExplicit                 // a leading Ra + halant + ZWJ (Telugu)
+	rephLogRepha                 // a dedicated encoded repha code point (Malayalam)
+)
+
 // indicConfig is the per-script Indic configuration.
 type indicConfig struct {
-	tag     string // canonical OpenType script tag
-	lo, hi  rune   // Unicode block range for auto-detection
-	ra      rune   // this script's RA (forms the reph with a following halant)
-	rephPos uint8  // ladder position a reph glyph reorders to
-	basePos uint8  // base-position model (basePosLast / basePosLastSinhala)
-	hasPref bool   // uses a pre-base-reordering Ra (pref feature) after the base
+	tag      string   // canonical OpenType script tag
+	lo, hi   rune     // Unicode block range for auto-detection
+	ra       rune     // this script's RA (forms the reph with a following halant)
+	rephPos  rephPos  // ladder slot a reph glyph reorders to
+	rephMode rephMode // how this script encodes its reph
+	basePos  uint8    // base-position model (basePosLast / basePosLastSinhala)
+	hasPref  bool     // uses a pre-base-reordering Ra (pref feature) after the base
 }
 
 // indicConfigs holds one config per supported Indic script, keyed by canonical
 // tag. The blocks are disjoint, so iteration order does not matter. Sinhala uses
 // the Sinhala base-position model; Oriya, Tamil, Telugu, Kannada and Malayalam
-// carry a pre-base-reordering Ra reordered by the pref feature.
+// carry a pre-base-reordering Ra reordered by the pref feature. Telugu encodes
+// its reph explicitly (Ra + halant + ZWJ) and Malayalam as a logical-order repha
+// code point (U+0D4E); every other script uses the implicit Ra + halant reph.
 var indicConfigs = map[string]indicConfig{
-	"deva": {"deva", 0x0900, 0x097F, 0x0930, posBeforePost, basePosLast, false},
-	"beng": {"beng", 0x0980, 0x09FF, 0x09B0, posAfterSub, basePosLast, false},
-	"guru": {"guru", 0x0A00, 0x0A7F, 0x0A30, posBeforeSub, basePosLast, false},
-	"gujr": {"gujr", 0x0A80, 0x0AFF, 0x0AB0, posBeforePost, basePosLast, false},
-	"orya": {"orya", 0x0B00, 0x0B7F, 0x0B30, posAfterMain, basePosLast, true},
-	"taml": {"taml", 0x0B80, 0x0BFF, 0x0BB0, posAfterPost, basePosLast, true},
-	"telu": {"telu", 0x0C00, 0x0C7F, 0x0C30, posAfterPost, basePosLast, true},
-	"knda": {"knda", 0x0C80, 0x0CFF, 0x0CB0, posAfterPost, basePosLast, true},
-	"mlym": {"mlym", 0x0D00, 0x0D7F, 0x0D30, posAfterMain, basePosLast, true},
-	"sinh": {"sinh", 0x0D80, 0x0DFF, 0x0DBB, posAfterMain, basePosLastSinhala, false},
+	"deva": {"deva", 0x0900, 0x097F, 0x0930, rephBeforePost, rephImplicit, basePosLast, false},
+	"beng": {"beng", 0x0980, 0x09FF, 0x09B0, rephAfterSub, rephImplicit, basePosLast, false},
+	"guru": {"guru", 0x0A00, 0x0A7F, 0x0A30, rephBeforeSub, rephImplicit, basePosLast, false},
+	"gujr": {"gujr", 0x0A80, 0x0AFF, 0x0AB0, rephBeforePost, rephImplicit, basePosLast, false},
+	"orya": {"orya", 0x0B00, 0x0B7F, 0x0B30, rephAfterMain, rephImplicit, basePosLast, true},
+	"taml": {"taml", 0x0B80, 0x0BFF, 0x0BB0, rephAfterPost, rephImplicit, basePosLast, true},
+	"telu": {"telu", 0x0C00, 0x0C7F, 0x0C30, rephAfterPost, rephExplicit, basePosLast, true},
+	"knda": {"knda", 0x0C80, 0x0CFF, 0x0CB0, rephAfterPost, rephImplicit, basePosLast, true},
+	"mlym": {"mlym", 0x0D00, 0x0D7F, 0x0D30, rephAfterMain, rephLogRepha, basePosLast, true},
+	"sinh": {"sinh", 0x0D80, 0x0DFF, 0x0DBB, rephAfterMain, rephImplicit, basePosLastSinhala, false},
 }
 
 // indicAlias maps every accepted script tag — the old (deva) and the v2 (dev2)
@@ -215,6 +247,22 @@ func indicCat(r rune) (cat, pos uint8) {
 // isIndicConsonant reports whether a category can act as the base consonant.
 func isIndicConsonant(cat uint8) bool { return cat == catC || cat == catCS }
 
+// isJoinerCat reports whether a category is a joiner (ZWJ or ZWNJ). A joiner
+// holds the following starter in the same syllable, and — after a reph's halant
+// — a ZWJ distinguishes the explicit-repha form from the implicit one.
+func isJoinerCat(cat uint8) bool { return cat == catZWJ || cat == catZWNJ }
+
+// hasConsonantFrom reports whether cats[from:end] holds a base-eligible
+// consonant — the consonant a reph needs after it to have a base.
+func hasConsonantFrom(cats []uint8, from, end int) bool {
+	for i := from; i < end; i++ {
+		if isIndicConsonant(cats[i]) {
+			return true
+		}
+	}
+	return false
+}
+
 // isIndicBase reports whether a category can serve as a syllable base when no
 // consonant does: an independent vowel, a placeholder or a dotted circle.
 func isIndicBase(cat uint8) bool {
@@ -288,7 +336,11 @@ func segmentIndic(runes []rune) [][2]int {
 	for i := 1; i < len(runes); i++ {
 		brk := false
 		switch {
-		case isIndicStarter(cats[i]) && cats[i-1] != catH:
+		case isIndicStarter(cats[i]) && cats[i-1] != catH &&
+			cats[i-1] != catRepha && !isJoinerCat(cats[i-1]):
+			// A starter breaks a syllable unless the previous rune holds it: a
+			// halant, a leading repha (Malayalam) or a joiner (the ZWJ of an
+			// explicit reph, or a conjunct-forming joiner).
 			brk = true
 		case cats[i] == catX && cats[i-1] != catX:
 			brk = true
@@ -414,16 +466,26 @@ func classifyIndic(runes []rune, cfg indicConfig) indicSyllable {
 		cats[i], raws[i] = indicCat(r)
 	}
 
-	// Reph: a leading Ra + halant with a consonant to be the base after them.
+	// Reph detection, per the script's encoding mode: the implicit Ra + halant,
+	// Telugu's explicit Ra + halant + ZWJ, or Malayalam's dedicated logical-order
+	// repha code point. Every form needs a consonant after it to be the base, and
+	// from marks the first rune past the reph (the parked prefix).
 	reph := false
 	from := 0
-	if n >= 3 && runes[0] == cfg.ra && cats[1] == catH {
-		for i := 2; i < n; i++ {
-			if isIndicConsonant(cats[i]) {
-				reph = true
-				from = 2
-				break
-			}
+	switch cfg.rephMode {
+	case rephImplicit:
+		if n >= 3 && runes[0] == cfg.ra && cats[1] == catH &&
+			!isJoinerCat(cats[2]) && hasConsonantFrom(cats, 2, n) {
+			reph, from = true, 2
+		}
+	case rephExplicit:
+		if n >= 4 && runes[0] == cfg.ra && cats[1] == catH &&
+			cats[2] == catZWJ && hasConsonantFrom(cats, 3, n) {
+			reph, from = true, 3
+		}
+	case rephLogRepha:
+		if n >= 2 && cats[0] == catRepha && hasConsonantFrom(cats, 1, n) {
+			reph, from = true, 1
 		}
 	}
 
@@ -451,7 +513,7 @@ func classifyIndic(runes []rune, cfg indicConfig) indicSyllable {
 	poss := make([]uint8, n)
 	for i := 0; i < n; i++ {
 		switch {
-		case reph && i < 2:
+		case reph && i < from:
 			poss[i] = posRaToReph
 		case i < base:
 			poss[i] = posPreC
@@ -571,13 +633,17 @@ func shapeIndicSyllable(font *opentype.Font, g *opentype.GSUB, runes []rune, clu
 		{Tag: "blwf"}, {Tag: "half"}, {Tag: "pstf"}, {Tag: "vatu"}, {Tag: "cjct"},
 	})
 
-	// Final reordering: a fired reph moves to its per-script slot; a fired
-	// pre-base-reordering Ra moves ahead of the base; everything else keeps its
-	// initial ladder position.
+	// Final reordering: the reph moves to its per-script slot — when rphf fired
+	// (the implicit and explicit modes ligate the Ra + halant), or, for a
+	// logical-order repha, simply because it was found (the code point is already
+	// the reph glyph, so no ligature is needed to reorder it). A fired pre-base-
+	// reordering Ra moves ahead of the base; everything else keeps its initial
+	// ladder position.
+	rephMoves := syl.reph && (rphfFired || cfg.rephMode == rephLogRepha)
 	reorderIndic(gl, track, func(id int) uint8 {
 		switch {
-		case rphfFired && id == 0:
-			return cfg.rephPos
+		case rephMoves && id == 0:
+			return uint8(cfg.rephPos)
 		case prefFired && id == syl.prefIdx:
 			return posPreC
 		default:

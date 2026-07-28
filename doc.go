@@ -65,9 +65,11 @@
 //     its own reorder position.
 //   - The base consonant is found with the script's base-position model
 //     (BASE_POS_LAST for every script but Sinhala, which uses
-//     BASE_POS_LAST_SINHALA), any reph (a leading Ra + halant) is found, and a
-//     defective cluster — one opening with a dependent mark and no base — has a
-//     dotted circle (U+25CC) inserted to carry the marks.
+//     BASE_POS_LAST_SINHALA), any reph is found in the script's encoding mode
+//     (the implicit Ra + halant, Telugu's explicit Ra + halant + ZWJ, or
+//     Malayalam's logical-order U+0D4E repha), and a defective cluster — one
+//     opening with a dependent mark and no base — has a dotted circle (U+25CC)
+//     inserted to carry the marks.
 //   - Initial reordering: a stable sort by ladder position moves pre-base matras
 //     before the base and parks the reph Ra at the front.
 //   - The basic GSUB features run in order (locl, nukt, akhn, rphf masked to the
@@ -85,8 +87,6 @@
 //
 // Indic edges deliberately left simple:
 //
-//   - Reph detection is the implicit Ra + halant form; the explicit-repha (ZWJ)
-//     and logical-repha modes are not separately modelled.
 //   - Only the old (deva) and v2 (dev2) OpenType tags are recognized; a font
 //     that files its features solely under a real script still resolves, since
 //     GSUB/GPOS use the script-agnostic default fallback.
