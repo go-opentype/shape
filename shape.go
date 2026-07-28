@@ -146,7 +146,7 @@ func shapeGSUB(font *opentype.Font, g *opentype.GSUB, run []opentype.GlyphIndex,
 		return shapeIndic(font, g, runes, cfg, user)
 	}
 	if script == "use" {
-		return shapeUSE(g, runes, run, clusters, user)
+		return shapeUSE(font, g, runes, user)
 	}
 	if script == "arab" {
 		// ccmp first, tracked, so the joining masks align to the (possibly
