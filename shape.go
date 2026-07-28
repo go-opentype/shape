@@ -142,6 +142,9 @@ func shapeGSUB(g *opentype.GSUB, run []opentype.GlyphIndex, clusters []int, rune
 	if cfg, ok := indicConfigForTag(script); ok {
 		return shapeIndic(g, run, clusters, runes, cfg, user)
 	}
+	if script == "use" {
+		return shapeUSE(g, runes, run, clusters, user)
+	}
 	if script == "arab" {
 		// ccmp first, tracked, so the joining masks align to the (possibly
 		// decomposed) run rather than the original letters.
@@ -164,8 +167,10 @@ func shapeGSUB(g *opentype.GSUB, run []opentype.GlyphIndex, clusters []int, rune
 
 // resolveScript picks the shaping script: an explicit "arab" (case-insensitive)
 // forces Arabic and an explicit Indic tag (old "deva" or v2 "dev2" form) forces
-// that Indic script; an empty value auto-detects Arabic, then Indic, from the
-// runes; anything else (including "latn"/"dflt") selects the default shaper.
+// that Indic script; an explicit USE script tag (thai, khmr, lana, ...) forces
+// the Universal Shaping Engine; an empty value auto-detects Arabic, then Indic,
+// then USE, from the runes; anything else (including "latn"/"dflt") selects the
+// default shaper.
 func resolveScript(want string, runes []rune) string {
 	if strings.ToLower(want) == "arab" {
 		return "arab"
@@ -177,22 +182,29 @@ func resolveScript(want string, runes []rune) string {
 		if cfg, ok := indicConfigForRunes(runes); ok {
 			return cfg.tag
 		}
+		if hasUSE(runes) {
+			return "use"
+		}
 		return "dflt"
 	}
 	if cfg, ok := indicConfigForTag(want); ok {
 		return cfg.tag
 	}
+	if useScriptTags[strings.ToLower(want)] {
+		return "use"
+	}
 	return "dflt"
 }
 
 // gposFeatures returns the GPOS feature tags for the run: kern/mark/mkmk/curs
-// for Arabic, kern/mark for the default path, plus any user features.
+// for Arabic, kern/dist/abvm/blwm/mark/mkmk for the Indic and USE paths,
+// kern/mark for the default path, plus any user features.
 func gposFeatures(script string, user []string) []string {
 	var feats []string
 	switch {
 	case script == "arab":
 		feats = []string{"kern", "mark", "mkmk", "curs"}
-	case isIndicTag(script):
+	case isIndicTag(script), script == "use":
 		feats = []string{"kern", "dist", "abvm", "blwm", "mark", "mkmk"}
 	default:
 		feats = []string{"kern", "mark"}

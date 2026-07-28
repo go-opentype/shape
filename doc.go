@@ -32,6 +32,12 @@
 //   - Vertical writing mode (CJK tategaki): with Options.Vertical the vert/vrt2
 //     features select upright vertical glyph forms and glyphs are stacked
 //     top-to-bottom using the font's vertical metrics. See "Vertical" below.
+//   - Universal Shaping Engine (USE): the general complex-script model for the
+//     many scripts without a bespoke shaper (Thai, Lao, Khmer, Myanmar, Tibetan,
+//     Javanese, Balinese, Buginese, Tai Tham, ...). Runs are classified into USE
+//     syllabic categories, split into clusters, reordered (pre-base vowels and
+//     modifiers before the base, repha after it), then run through the USE
+//     GSUB/GPOS feature pipeline. See "USE" below.
 //
 // # Usage
 //
@@ -82,14 +88,15 @@
 //
 // # Scope
 //
-// Arabic, Indic and Latin/default (Latin, Cyrillic, Greek, CJK, ...) shaping
-// are implemented, plus Egyptian Hieroglyph quadrat layout and vertical writing
-// mode. Scripts that still need a dedicated state machine — Thai/Lao, Khmer,
-// Myanmar and the Universal Shaping Engine — are out of scope and shape as the
-// default path (no reordering); they are future work. Cluster indices are exact
-// for one-to-one substitutions (the Arabic positional forms) and best-effort,
-// monotonic, when a substitution changes the run length (ligatures,
-// decomposition, Indic reordering).
+// Arabic, Indic, the Universal Shaping Engine (USE) and Latin/default (Latin,
+// Cyrillic, Greek, CJK, ...) shaping are implemented, plus Egyptian Hieroglyph
+// quadrat layout and vertical writing mode. USE covers the complex scripts that
+// lack a bespoke shaper (Thai, Lao, Khmer, Myanmar, Tibetan, Javanese, ...); it
+// is the general USE model, so per-script quirks HarfBuzz special-cases are not
+// reproduced (see "USE" below). Cluster indices are exact for one-to-one
+// substitutions (the Arabic positional forms) and best-effort, monotonic, when a
+// substitution changes the run length (ligatures, decomposition, Indic and USE
+// reordering).
 //
 // # Egyptian Hieroglyphs
 //
@@ -120,4 +127,29 @@
 // the vertical baseline, and YOffset is its vertical origin (VORG when present,
 // otherwise the vhea ascender). Bidi reordering is not applied — a vertical
 // column reads top-to-bottom in logical order.
+//
+// # USE
+//
+// The Universal Shaping Engine handles the complex scripts Unicode supports
+// without a dedicated shaper — Thai, Lao, Khmer, Myanmar, Tibetan, Javanese,
+// Balinese, Buginese, Tai Tham and many more. A run is forced to USE with an
+// explicit USE script tag (thai, khmr, lana, ...) or auto-detected from its
+// runes. Each rune is assigned a USE syllabic category (base, halant, pre/above/
+// below/post vowel, vowel modifier, repha, ...), derived from the Unicode
+// Indic_Syllabic_Category, Indic_Positional_Category and General_Category by
+// cmd/genuse into the generated use_table.go; DeriveUSECategory is the shared
+// derivation. The run is split into clusters by the USE syllable grammar
+// (standard, virama-terminated, number-joiner, symbol and independent clusters),
+// the default/basic GSUB features run (locl, ccmp, nukt, akhn, rphf, pref, rkrf,
+// abvf, blwf, half, pstf, vatu, cjct), the run is reordered, the presentation
+// GSUB features run (isol, init, medi, fina, abvs, blws, haln, pres, psts) and
+// GPOS applies kern, dist, abvm, blwm, mark and mkmk.
+//
+// This is the general USE model. Only property-based reordering is performed —
+// pre-base vowels (VPre) and pre-base vowel modifiers (VMPre) move ahead of the
+// base and a leading repha (R) moves after it. Per-script quirks HarfBuzz
+// special-cases (Sakot handling, split-vowel decomposition, pref/rphf
+// feature-based reordering and dotted-circle insertion for defective clusters)
+// are not reproduced, and the nine dedicated-shaper Indic scripts are routed to
+// the Indic shaper rather than USE.
 package shape
