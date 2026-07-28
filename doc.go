@@ -17,6 +17,15 @@
 //     disconnected isolated letters.
 //   - Ligatures, mark attachment and kerning: GSUB ccmp/rlig/liga/calt then
 //     GPOS kern/mark/mkmk/curs, so diacritics sit on their base and pairs kern.
+//   - Egyptian Hieroglyph quadrats: the format-control characters
+//     U+13430..U+1345F (vertical/horizontal joiners, corner insertions,
+//     overlays, segment and enclosure delimiters, plus the Unicode 15 blank and
+//     mirror additions) are parsed into a two-dimensional quadrat tree and laid
+//     out geometrically, so a run of signs renders as compact blocks rather than
+//     a flat row. See "Egyptian Hieroglyphs" below.
+//   - Vertical writing mode (CJK tategaki): with Options.Vertical the vert/vrt2
+//     features select upright vertical glyph forms and glyphs are stacked
+//     top-to-bottom using the font's vertical metrics. See "Vertical" below.
 //
 // # Usage
 //
@@ -40,4 +49,34 @@
 // future work. Cluster indices are exact for one-to-one substitutions (the
 // Arabic positional forms) and best-effort, monotonic, when a substitution
 // changes the run length (ligatures, decomposition).
+//
+// # Egyptian Hieroglyphs
+//
+// A run whose script is "egyp" (or that contains any Egyptian rune, U+13000 and
+// above) is shaped as quadrats: the format controls U+13430..U+1345F are an
+// infix notation grouping signs two-dimensionally. Vertical joiners stack signs,
+// horizontal joiners set them side by side, overlays place one over another,
+// insertions drop a sign into a corner or edge of a host, and segment/enclosure
+// delimiters bracket sub-groups; the Unicode 15 blank/shading code points are
+// treated as space-occupying blanks and the mirror control is recognised as a
+// geometric no-op. Each top-level quadrat is laid out inside one em block: every
+// sign gets a Scale below 1 and an X/Y offset placing it in the block, and the
+// block's advance is carried on its last glyph.
+//
+// The quadrat layout is geometric: OpenType has no standard font-driven quadrat
+// mechanism, so the control-character model above is implemented directly. The
+// font's GSUB ccmp feature is consulted to pick font-preferred sign forms
+// position-for-position before layout (a substitution that would change the sign
+// count, such as a ligature, is suppressed to preserve the quadrat structure);
+// font GPOS is not applied, the geometric placement supersedes it.
+//
+// # Vertical
+//
+// Options.Vertical selects vertical writing mode (CJK tategaki). The vert/vrt2
+// GSUB features swap horizontal glyph forms for their upright vertical variants,
+// and each glyph is positioned top-to-bottom: YAdvance is the glyph's vertical
+// advance (from vmtx, or one em when the font has none), XOffset centres it on
+// the vertical baseline, and YOffset is its vertical origin (VORG when present,
+// otherwise the vhea ascender). Bidi reordering is not applied — a vertical
+// column reads top-to-bottom in logical order.
 package shape

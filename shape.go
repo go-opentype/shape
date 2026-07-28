@@ -24,6 +24,10 @@ type Glyph struct {
 	YAdvance int
 	XOffset  int
 	YOffset  int
+	// Scale is the factor to draw the glyph at relative to the face's size:
+	// 1.0 for ordinary shaping, a fraction for the scaled-down signs of an
+	// Egyptian Hieroglyph quadrat.
+	Scale float64
 }
 
 // Options configures a Shape call. The zero value shapes with an automatic base
@@ -41,6 +45,11 @@ type Options struct {
 	// whole run in both the substitution and positioning stages (a tag with no
 	// matching lookups is a no-op).
 	Features []string
+	// Vertical selects vertical writing mode (CJK tategaki): glyphs are laid
+	// out top to bottom, the vert/vrt2 features select upright vertical forms,
+	// and each glyph carries its vertical advance in YAdvance. Egyptian
+	// Hieroglyph runs always use quadrat layout regardless of this flag.
+	Vertical bool
 }
 
 // Shape turns text into a positioned glyph run in visual order. It resolves the
@@ -54,6 +63,12 @@ func Shape(face *opentype.Face, text string, opts Options) []Glyph {
 	runes := []rune(text)
 	if len(runes) == 0 {
 		return nil
+	}
+	if isEgyptianRun(opts.Script, runes) {
+		return shapeEgyptian(face, runes, opts)
+	}
+	if opts.Vertical {
+		return shapeVertical(face, runes, opts)
 	}
 	font := face.Font()
 	levels := bidi.ResolveLevels(runes, opts.Direction)
@@ -102,6 +117,7 @@ func Shape(face *opentype.Face, text string, opts Options) []Glyph {
 			GID:      run[idx],
 			Cluster:  clusters[idx],
 			XAdvance: px(advances[idx], scale),
+			Scale:    1,
 		}
 		if positions != nil {
 			g.XAdvance = px(advances[idx]+positions[idx].XAdvance, scale)
