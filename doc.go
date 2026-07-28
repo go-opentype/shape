@@ -17,6 +17,12 @@
 //     disconnected isolated letters.
 //   - Ligatures, mark attachment and kerning: GSUB ccmp/rlig/liga/calt then
 //     GPOS kern/mark/mkmk/curs, so diacritics sit on their base and pairs kern.
+//   - Indic syllable reordering: Devanagari and the other Indic scripts are
+//     split into syllables, each glyph is given a reorder position, the Indic
+//     GSUB feature pipeline runs, and a stable sort moves pre-base (left) matras
+//     before the base consonant and the reph to its script-specific slot — the
+//     reordering a naive cmap-then-GSUB pass cannot express. See the Indic
+//     section below.
 //   - Egyptian Hieroglyph quadrats: the format-control characters
 //     U+13430..U+1345F (vertical/horizontal joiners, corner insertions,
 //     overlays, segment and enclosure delimiters, plus the Unicode 15 blank and
@@ -40,15 +46,50 @@
 // character); the script is auto-detected from the text (any Arabic-block rune
 // selects the Arabic shaper) unless Options.Script forces it.
 //
+// # Indic
+//
+// Devanagari, Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada and
+// Malayalam are shaped with the HarfBuzz "indic" model (the dev2/bng2/... v2
+// feature set; the old deva/beng/... tags are accepted too and normalized).
+// Each run is split into syllables; within a syllable the base consonant (last
+// consonant) and any reph (a leading Ra + halant) are found, every glyph is
+// assigned a position on a single reorder ladder, the basic GSUB features run in
+// order (locl, nukt, akhn, rphf, rkrf, pref, blwf, half, pstf, vatu, cjct), a
+// stable sort by ladder position performs the reordering (pre-base matras move
+// before the base, the reph moves to its per-script slot), and the presentation
+// features run (init, pres, abvs, blws, psts, haln). GPOS then applies kern,
+// dist, abvm, blwm, mark and mkmk. Character categories come from a table
+// generated from the Unicode Character Database (Indic_Syllabic_Category and
+// Indic_Positional_Category) by cmd/genindic.
+//
+// Indic edges deliberately left simple:
+//
+//   - Reordering is modelled as a single stable sort by ladder position rather
+//     than HarfBuzz's separate initial and final reordering passes. This gets
+//     the reph and pre-base-matra placement right for the common cases but does
+//     not reproduce every pre-base-reordering-consonant (pref) or contextual
+//     matra-position adjustment.
+//   - Reph detection is the implicit Ra + halant form; the explicit-repha and
+//     logical-repha (Malayalam) modes are not distinguished, and per-script
+//     base-position variants (Telugu/Kannada BASE_POS_LAST_SINHALA-style) use
+//     the BASE_POS_LAST rule.
+//   - Split matras (a single matra with left and right parts, for example the
+//     Bengali/Tamil O and AU signs) are placed by their primary positional
+//     category and are not decomposed before reordering.
+//   - Only the old (deva) and v2 (dev2) OpenType tags are recognized; a font
+//     that files its features solely under a real script still resolves, since
+//     GSUB/GPOS use the script-agnostic default fallback.
+//
 // # Scope
 //
-// Arabic and Latin/default (Latin, Cyrillic, Greek, CJK, ...) shaping are
-// implemented. Scripts that need glyph reordering or a state machine — Indic
-// (Devanagari, ...), Thai/Lao, Khmer, Myanmar and the Universal Shaping Engine
-// — are out of scope and shape as the default path (no reordering); they are
-// future work. Cluster indices are exact for one-to-one substitutions (the
-// Arabic positional forms) and best-effort, monotonic, when a substitution
-// changes the run length (ligatures, decomposition).
+// Arabic, Indic and Latin/default (Latin, Cyrillic, Greek, CJK, ...) shaping
+// are implemented, plus Egyptian Hieroglyph quadrat layout and vertical writing
+// mode. Scripts that still need a dedicated state machine — Thai/Lao, Khmer,
+// Myanmar and the Universal Shaping Engine — are out of scope and shape as the
+// default path (no reordering); they are future work. Cluster indices are exact
+// for one-to-one substitutions (the Arabic positional forms) and best-effort,
+// monotonic, when a substitution changes the run length (ligatures,
+// decomposition, Indic reordering).
 //
 // # Egyptian Hieroglyphs
 //
