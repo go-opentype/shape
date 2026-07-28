@@ -1,0 +1,6 @@
+github.com/go-opentype/bidi v0.2.0 h1:ze8chEUw22c98LZug2GByD9cc3Zuq0qARxrSLGj1ioQ=
+github.com/go-opentype/bidi v0.2.0/go.mod h1:PaWZ9P93jwQaXsEvAoSxvJ3P70S9f8TuFGDstTvcfmM=
+github.com/go-opentype/fonts v0.3.0 h1:ufqQmIoc34aDufJzUAVaufGcFV5ljJEv4IqmZGF3+4E=
+github.com/go-opentype/fonts v0.3.0/go.mod h1:C6yQL2apHItfEZ5hztpsHF0S5mlX/hklLlq/Z5fRG/g=
+github.com/go-opentype/opentype v0.3.2 h1:ggCFJ/Zwgm7AXE3sH1Mm6s6sJ/38zYzBO51dpU8bWhc=
+github.com/go-opentype/opentype v0.3.2/go.mod h1:AOixevJf7XQaH7+WG+OMIOZEbYPXfMqklVk26Y6YTUU=
