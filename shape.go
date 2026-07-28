@@ -64,6 +64,9 @@ func Shape(face *opentype.Face, text string, opts Options) []Glyph {
 	if len(runes) == 0 {
 		return nil
 	}
+	// Compose any conjoining Hangul jamo (L·V·T) into precomposed syllables
+	// before the run is built, so they cmap + shape like ordinary Korean.
+	runes = composeHangul(runes)
 	if isEgyptianRun(opts.Script, runes) {
 		return shapeEgyptian(face, runes, opts)
 	}
