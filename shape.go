@@ -91,7 +91,7 @@ func Shape(face *opentype.Face, text string, opts Options) []Glyph {
 	// source cluster of every glyph so the joining masks can be rebuilt on the
 	// decomposed run and the output can be mapped back to the text.
 	if g := font.GSUB(); g != nil {
-		run, clusters = shapeGSUB(g, run, clusters, runes, script, forms, opts.Features)
+		run, clusters = shapeGSUB(font, g, run, clusters, runes, script, forms, opts.Features)
 	}
 
 	// Base advances (font units) for the substituted run.
@@ -141,9 +141,9 @@ func Shape(face *opentype.Face, text string, opts Options) []Glyph {
 // default path applies ccmp/liga/clig over the whole run. User features follow,
 // over the whole run. An Indic script routes to the syllable-based Indic shaper
 // (shapeIndic), which needs the source runes for categorization and reordering.
-func shapeGSUB(g *opentype.GSUB, run []opentype.GlyphIndex, clusters []int, runes []rune, script string, forms []bidi.JoinForm, user []string) ([]opentype.GlyphIndex, []int) {
+func shapeGSUB(font *opentype.Font, g *opentype.GSUB, run []opentype.GlyphIndex, clusters []int, runes []rune, script string, forms []bidi.JoinForm, user []string) ([]opentype.GlyphIndex, []int) {
 	if cfg, ok := indicConfigForTag(script); ok {
-		return shapeIndic(g, run, clusters, runes, cfg, user)
+		return shapeIndic(font, g, runes, cfg, user)
 	}
 	if script == "use" {
 		return shapeUSE(g, runes, run, clusters, user)

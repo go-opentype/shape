@@ -12,19 +12,26 @@ import (
 
 // Indic shaping (the HarfBuzz "indic" shaper, dev2/bng2/... feature model).
 //
-// The pipeline, per syllable:
+// The pipeline, per syllable, reproduces HarfBuzz's two reordering passes:
 //
-//  1. Categorize each rune (indicRange table, from cmd/genindic) into a category
-//     and a raw positional category.
-//  2. Find the reph (a leading Ra + halant) and the base consonant (the last
-//     consonant, BASE_POS_LAST), and assign every glyph a reorder position on a
-//     single ladder from POS_PRE_M (pre-base matra) through POS_BASE_C to
-//     POS_SMVD (syllable modifiers).
-//  3. Apply the basic GSUB features in order — locl, nukt, akhn, rphf (masked to
-//     the reph only), rkrf, pref, blwf, half, pstf, vatu, cjct.
-//  4. Reorder: a stable sort by ladder position moves pre-base matras before the
-//     base and the reph glyph to its script-specific position.
-//  5. Apply the presentation GSUB features — init (masked to the first glyph),
+//  1. Split two-part dependent vowels (the Bengali/Tamil/Malayalam/... O and AU
+//     signs) into their canonical components, so each part reorders to its own
+//     position (decomposeIndic).
+//  2. Categorize each rune (indicRange table, from cmd/genindic) into a category
+//     and a raw positional category, find the reph (a leading Ra + halant) and
+//     the base consonant with the script's base-position model, and — when the
+//     cluster is defective (opens with a dependent mark and has no base) — insert
+//     a dotted circle to carry the marks (analyzeIndic).
+//  3. Initial reordering: a stable sort by ladder position moves pre-base matras
+//     ahead of the base and parks the reph Ra at the front of the syllable.
+//  4. The basic GSUB features run in order — locl, nukt, akhn, rphf (masked to
+//     the reph Ra), rkrf, pref (masked to the pre-base-reordering Ra), blwf,
+//     half, pstf, vatu, cjct — and whether rphf and pref actually fired is
+//     observed by re-shaping the masked run.
+//  5. Final reordering: if rphf fired the reph glyph moves to its per-script slot
+//     (otherwise the Ra stays a pre-base consonant); if pref fired the
+//     pre-base-reordering Ra moves ahead of the base.
+//  6. The presentation GSUB features run — init (masked to the first glyph),
 //     pres, abvs, blws, psts, haln.
 //
 // GPOS (kern, dist, abvm, blwm, mark, mkmk) is then run over the whole run by
@@ -79,26 +86,40 @@ const (
 	posEnd
 )
 
+// Base-position models: how the base consonant is located within a syllable.
+// basePosLast (every configured script but Sinhala) takes the last consonant;
+// basePosLastSinhala takes the last consonant too but breaks before a
+// ZWJ-joined consonant, the Sinhala rule.
+const (
+	basePosLast uint8 = iota
+	basePosLastSinhala
+)
+
 // indicConfig is the per-script Indic configuration.
 type indicConfig struct {
 	tag     string // canonical OpenType script tag
 	lo, hi  rune   // Unicode block range for auto-detection
 	ra      rune   // this script's RA (forms the reph with a following halant)
 	rephPos uint8  // ladder position a reph glyph reorders to
+	basePos uint8  // base-position model (basePosLast / basePosLastSinhala)
+	hasPref bool   // uses a pre-base-reordering Ra (pref feature) after the base
 }
 
 // indicConfigs holds one config per supported Indic script, keyed by canonical
-// tag. The blocks are disjoint, so iteration order does not matter.
+// tag. The blocks are disjoint, so iteration order does not matter. Sinhala uses
+// the Sinhala base-position model; Oriya, Tamil, Telugu, Kannada and Malayalam
+// carry a pre-base-reordering Ra reordered by the pref feature.
 var indicConfigs = map[string]indicConfig{
-	"deva": {"deva", 0x0900, 0x097F, 0x0930, posBeforePost},
-	"beng": {"beng", 0x0980, 0x09FF, 0x09B0, posAfterSub},
-	"guru": {"guru", 0x0A00, 0x0A7F, 0x0A30, posBeforeSub},
-	"gujr": {"gujr", 0x0A80, 0x0AFF, 0x0AB0, posBeforePost},
-	"orya": {"orya", 0x0B00, 0x0B7F, 0x0B30, posAfterMain},
-	"taml": {"taml", 0x0B80, 0x0BFF, 0x0BB0, posAfterPost},
-	"telu": {"telu", 0x0C00, 0x0C7F, 0x0C30, posAfterPost},
-	"knda": {"knda", 0x0C80, 0x0CFF, 0x0CB0, posAfterPost},
-	"mlym": {"mlym", 0x0D00, 0x0D7F, 0x0D30, posAfterMain},
+	"deva": {"deva", 0x0900, 0x097F, 0x0930, posBeforePost, basePosLast, false},
+	"beng": {"beng", 0x0980, 0x09FF, 0x09B0, posAfterSub, basePosLast, false},
+	"guru": {"guru", 0x0A00, 0x0A7F, 0x0A30, posBeforeSub, basePosLast, false},
+	"gujr": {"gujr", 0x0A80, 0x0AFF, 0x0AB0, posBeforePost, basePosLast, false},
+	"orya": {"orya", 0x0B00, 0x0B7F, 0x0B30, posAfterMain, basePosLast, true},
+	"taml": {"taml", 0x0B80, 0x0BFF, 0x0BB0, posAfterPost, basePosLast, true},
+	"telu": {"telu", 0x0C00, 0x0C7F, 0x0C30, posAfterPost, basePosLast, true},
+	"knda": {"knda", 0x0C80, 0x0CFF, 0x0CB0, posAfterPost, basePosLast, true},
+	"mlym": {"mlym", 0x0D00, 0x0D7F, 0x0D30, posAfterMain, basePosLast, true},
+	"sinh": {"sinh", 0x0D80, 0x0DFF, 0x0DBB, posAfterMain, basePosLastSinhala, false},
 }
 
 // indicAlias maps every accepted script tag — the old (deva) and the v2 (dev2)
@@ -113,6 +134,7 @@ var indicAlias = map[string]string{
 	"telu": "telu", "tel2": "telu",
 	"knda": "knda", "knd2": "knda",
 	"mlym": "mlym", "mlm2": "mlym",
+	"sinh": "sinh", "snh2": "sinh",
 }
 
 // indicConfigForTag resolves a script tag (old or v2 form, case-insensitive) to
@@ -193,6 +215,12 @@ func indicCat(r rune) (cat, pos uint8) {
 // isIndicConsonant reports whether a category can act as the base consonant.
 func isIndicConsonant(cat uint8) bool { return cat == catC || cat == catCS }
 
+// isIndicBase reports whether a category can serve as a syllable base when no
+// consonant does: an independent vowel, a placeholder or a dotted circle.
+func isIndicBase(cat uint8) bool {
+	return cat == catV || cat == catPlaceholder || cat == catDottedCircle
+}
+
 // isIndicStarter reports whether a category begins a new syllable when it is not
 // bound to the previous one by a halant.
 func isIndicStarter(cat uint8) bool {
@@ -202,6 +230,46 @@ func isIndicStarter(cat uint8) bool {
 	default:
 		return false
 	}
+}
+
+// indicDecomp holds the canonical (Unicode NFD) decompositions of the Indic
+// two-part dependent vowels — the "split matras" whose glyphs render with a
+// pre-base part and an above/below/post part. HarfBuzz decomposes these during
+// normalization so each part reaches its own reorder position; the values are
+// fully decomposed (no value contains a further-decomposable code point).
+var indicDecomp = map[rune][]rune{
+	// Bengali
+	0x09CB: {0x09C7, 0x09BE}, 0x09CC: {0x09C7, 0x09D7},
+	// Oriya
+	0x0B48: {0x0B47, 0x0B56}, 0x0B4B: {0x0B47, 0x0B3E}, 0x0B4C: {0x0B47, 0x0B57},
+	// Tamil
+	0x0BCA: {0x0BC6, 0x0BBE}, 0x0BCB: {0x0BC7, 0x0BBE}, 0x0BCC: {0x0BC6, 0x0BD7},
+	// Telugu
+	0x0C48: {0x0C46, 0x0C56},
+	// Kannada
+	0x0CC0: {0x0CBF, 0x0CD5}, 0x0CC7: {0x0CC6, 0x0CD5}, 0x0CC8: {0x0CC6, 0x0CD6},
+	0x0CCA: {0x0CC6, 0x0CC2}, 0x0CCB: {0x0CC6, 0x0CC2, 0x0CD5},
+	// Malayalam
+	0x0D4A: {0x0D46, 0x0D3E}, 0x0D4B: {0x0D47, 0x0D3E}, 0x0D4C: {0x0D46, 0x0D57},
+}
+
+// decomposeIndic expands every split matra in runes into its canonical
+// components, returning the expanded rune sequence and, for each expanded rune,
+// the index of the source rune it derives from (its cluster). A rune that does
+// not decompose is carried through unchanged with its own index.
+func decomposeIndic(runes []rune) (out []rune, clusters []int) {
+	for i, r := range runes {
+		if parts, ok := indicDecomp[r]; ok {
+			for _, p := range parts {
+				out = append(out, p)
+				clusters = append(clusters, i)
+			}
+			continue
+		}
+		out = append(out, r)
+		clusters = append(clusters, i)
+	}
+	return out, clusters
 }
 
 // segmentIndic splits runes into syllable spans [start,end). A span breaks
@@ -256,30 +324,100 @@ func afterBasePos(cat, raw uint8) uint8 {
 	}
 }
 
-// analyzeSyllable categorizes runes[start:end], finds the reph and base, and
-// returns each local glyph's ladder position plus whether the span has a reph
-// and whether it contains any Indic character at all.
-func analyzeSyllable(runes []rune, start, end int, cfg indicConfig) (pos []uint8, reph, indic bool) {
-	n := end - start
-	cats := make([]uint8, n)
-	raws := make([]uint8, n)
-	for i := 0; i < n; i++ {
-		cats[i], raws[i] = indicCat(runes[start+i])
-		if cats[i] != catX {
-			indic = true
+// findIndicBase locates the base consonant in cats[from:end] under the given
+// base-position model, returning its index or -1 when there is no consonant.
+func findIndicBase(cats []uint8, from, end int, mode uint8) int {
+	if mode == basePosLastSinhala {
+		base := -1
+		for i := from; i < end; i++ {
+			if isIndicConsonant(cats[i]) {
+				if i > from && cats[i-1] == catZWJ {
+					break
+				}
+				base = i
+			}
+		}
+		return base
+	}
+	for i := end - 1; i >= from; i-- {
+		if isIndicConsonant(cats[i]) {
+			return i
 		}
 	}
-	pos = make([]uint8, n)
-	if !indic {
-		for i := range pos {
-			pos[i] = posEnd
+	return -1
+}
+
+// indicSyllable is the analyzed form of one syllable: per-glyph categories, raw
+// positions and initial ladder positions, plus the base index, the reph flag
+// and the pre-base-reordering Ra index (prefIdx, -1 when none).
+type indicSyllable struct {
+	cats    []uint8
+	poss    []uint8
+	base    int
+	reph    bool
+	prefIdx int
+}
+
+// analyzeIndic categorizes one syllable's runes, finds its reph and base, and
+// assigns each glyph its initial ladder position. When the syllable is defective
+// (indic, but with no consonant, vowel or placeholder to be the base and opening
+// with a dependent mark) it prepends a dotted circle to carry the marks; the
+// returned runes and clusters reflect that insertion. It reports indic=false for
+// a span with no Indic character at all.
+func analyzeIndic(runes []rune, clusters []int, cfg indicConfig) (lr []rune, lc []int, syl indicSyllable, indic bool) {
+	lr = append([]rune(nil), runes...)
+	lc = append([]int(nil), clusters...)
+	if !anyIndic(lr) {
+		poss := make([]uint8, len(lr))
+		for i := range poss {
+			poss[i] = posEnd
 		}
-		return pos, false, false
+		return lr, lc, indicSyllable{poss: poss, base: -1, prefIdx: -1}, false
+	}
+
+	syl = classifyIndic(lr, cfg)
+	if syl.base < 0 {
+		// Defective cluster: insert a dotted circle at the front as the base and
+		// re-classify around it.
+		lr = append([]rune{0x25CC}, lr...)
+		lc = append([]int{firstCluster(clusters)}, lc...)
+		syl = classifyIndic(lr, cfg)
+	}
+	return lr, lc, syl, true
+}
+
+// anyIndic reports whether any rune categorizes to something other than catX.
+func anyIndic(runes []rune) bool {
+	for _, r := range runes {
+		if c, _ := indicCat(r); c != catX {
+			return true
+		}
+	}
+	return false
+}
+
+// firstCluster returns the first cluster index, or 0 for an empty slice.
+func firstCluster(clusters []int) int {
+	if len(clusters) == 0 {
+		return 0
+	}
+	return clusters[0]
+}
+
+// classifyIndic assigns categories, raw positions, ladder positions, the base,
+// the reph flag and the pre-base-reordering Ra of a syllable's runes.
+func classifyIndic(runes []rune, cfg indicConfig) indicSyllable {
+	n := len(runes)
+	cats := make([]uint8, n)
+	raws := make([]uint8, n)
+	for i, r := range runes {
+		cats[i], raws[i] = indicCat(r)
 	}
 
 	// Reph: a leading Ra + halant with a consonant to be the base after them.
+	reph := false
 	from := 0
-	if n >= 3 && runes[start] == cfg.ra && cats[1] == catH {
+	if n >= 3 && runes[0] == cfg.ra && cats[1] == catH {
 		for i := 2; i < n; i++ {
 			if isIndicConsonant(cats[i]) {
 				reph = true
@@ -289,101 +427,163 @@ func analyzeSyllable(runes []rune, start, end int, cfg indicConfig) (pos []uint8
 		}
 	}
 
-	// Base: the last consonant at or after the reph (BASE_POS_LAST).
-	base := -1
-	for i := n - 1; i >= from; i-- {
-		if isIndicConsonant(cats[i]) {
-			base = i
-			break
-		}
+	base := findIndicBase(cats, from, n, cfg.basePos)
+
+	// Pre-base-reordering Ra: for the scripts that carry one, a trailing halant +
+	// Ra is excluded from the base and reordered by the pref feature instead.
+	prefIdx := -1
+	if cfg.hasPref && base > from && runes[base] == cfg.ra && cats[base-1] == catH {
+		prefIdx = base
+		base = findIndicBase(cats, from, base-1, cfg.basePos)
 	}
+
 	if base < 0 {
-		// No consonant to be the base: a vowel (or standalone) syllable. The
-		// base is the first independent vowel or placeholder, else the start.
-		base = 0
+		// No consonant: the base is the first independent vowel, placeholder or
+		// dotted circle, else there is no base (a defective cluster).
 		for i := 0; i < n; i++ {
-			if cats[i] == catV || cats[i] == catPlaceholder {
+			if isIndicBase(cats[i]) {
 				base = i
 				break
 			}
 		}
 	}
 
+	poss := make([]uint8, n)
 	for i := 0; i < n; i++ {
 		switch {
 		case reph && i < 2:
-			pos[i] = cfg.rephPos
+			poss[i] = posRaToReph
 		case i < base:
-			pos[i] = posPreC
+			poss[i] = posPreC
 		case i == base:
-			pos[i] = posBaseC
+			poss[i] = posBaseC
 		default:
-			pos[i] = afterBasePos(cats[i], raws[i])
+			poss[i] = afterBasePos(cats[i], raws[i])
 		}
 	}
-	return pos, reph, true
+	return indicSyllable{cats: cats, poss: poss, base: base, reph: reph, prefIdx: prefIdx}
 }
 
-// reorderByPos stably reorders a glyph run and its clusters by the ladder
-// position of each glyph's source cluster, the Indic initial-reordering move.
-func reorderByPos(gl []opentype.GlyphIndex, cl []int, posOf map[int]uint8) ([]opentype.GlyphIndex, []int) {
+// reorderIndic stably permutes gl and its parallel track slice by key(track[i]).
+func reorderIndic(gl []opentype.GlyphIndex, track []int, key func(int) uint8) {
 	idx := make([]int, len(gl))
 	for i := range idx {
 		idx[i] = i
 	}
-	sort.SliceStable(idx, func(a, b int) bool { return posOf[cl[idx[a]]] < posOf[cl[idx[b]]] })
-	og := make([]opentype.GlyphIndex, len(gl))
-	oc := make([]int, len(cl))
+	sort.SliceStable(idx, func(a, b int) bool { return key(track[idx[a]]) < key(track[idx[b]]) })
+	ng := make([]opentype.GlyphIndex, len(gl))
+	nt := make([]int, len(track))
 	for k, j := range idx {
-		og[k] = gl[j]
-		oc[k] = cl[j]
+		ng[k] = gl[j]
+		nt[k] = track[j]
 	}
-	return og, oc
+	copy(gl, ng)
+	copy(track, nt)
+}
+
+// maskForTrack returns a position mask selecting the glyphs whose track id is
+// id, so a masked feature applies exactly at that logical glyph wherever the
+// reordering has moved it.
+func maskForTrack(track []int, id int) []bool {
+	m := make([]bool, len(track))
+	for i, t := range track {
+		if t == id {
+			m[i] = true
+		}
+	}
+	return m
+}
+
+// applyIndicFeature applies a single masked GSUB feature to the run and reports
+// whether it changed the glyphs (fired). track is threaded through so the caller
+// keeps its logical-index mapping.
+func applyIndicFeature(g *opentype.GSUB, gl []opentype.GlyphIndex, track []int, tag string, mask []bool) ([]opentype.GlyphIndex, []int, bool) {
+	ng, nt := g.ApplyMaskedTracked(gl, track, []opentype.FeatureApp{{Tag: tag, Positions: mask}})
+	return ng, nt, glyphsChanged(gl, ng)
+}
+
+// glyphsChanged reports whether two glyph runs differ in length or content.
+func glyphsChanged(a, b []opentype.GlyphIndex) bool {
+	if len(a) != len(b) {
+		return true
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return true
+		}
+	}
+	return false
 }
 
 // shapeIndic runs the full Indic GSUB pipeline over the run, one syllable at a
-// time, and returns the substituted, reordered run with its clusters. The input
-// clusters are the identity (glyph i comes from rune i), as Shape passes them.
-func shapeIndic(g *opentype.GSUB, run []opentype.GlyphIndex, clusters []int, runes []rune, cfg indicConfig, user []string) ([]opentype.GlyphIndex, []int) {
+// time, and returns the substituted, reordered run with its clusters. It rebuilds
+// the glyph run from the (split-matra-decomposed) runes via the font's cmap, so
+// the incoming run/clusters from Shape are not needed here.
+func shapeIndic(font *opentype.Font, g *opentype.GSUB, runes []rune, cfg indicConfig, user []string) ([]opentype.GlyphIndex, []int) {
+	dRunes, dClusters := decomposeIndic(runes)
 	var outG []opentype.GlyphIndex
 	var outC []int
-	for _, sp := range segmentIndic(runes) {
-		gl := append([]opentype.GlyphIndex(nil), run[sp[0]:sp[1]]...)
-		cl := append([]int(nil), clusters[sp[0]:sp[1]]...)
-		gl, cl = shapeIndicSyllable(g, gl, cl, runes, sp[0], sp[1], cfg, user)
+	for _, sp := range segmentIndic(dRunes) {
+		gl, cl := shapeIndicSyllable(font, g, dRunes[sp[0]:sp[1]], dClusters[sp[0]:sp[1]], cfg, user)
 		outG = append(outG, gl...)
 		outC = append(outC, cl...)
 	}
 	return outG, outC
 }
 
-// shapeIndicSyllable shapes one syllable span. gl/cl are the syllable's glyphs
-// and (global) clusters; start/end delimit the span in runes.
-func shapeIndicSyllable(g *opentype.GSUB, gl []opentype.GlyphIndex, cl []int, runes []rune, start, end int, cfg indicConfig, user []string) ([]opentype.GlyphIndex, []int) {
-	pos, reph, indic := analyzeSyllable(runes, start, end, cfg)
+// shapeIndicSyllable shapes one syllable span given its decomposed runes and
+// their clusters (source rune indices). It maps the runes to glyphs, runs the
+// two-pass reordering and the GSUB feature pipeline, and returns the shaped
+// glyphs with each glyph mapped back to its source cluster.
+func shapeIndicSyllable(font *opentype.Font, g *opentype.GSUB, runes []rune, clusters []int, cfg indicConfig, user []string) ([]opentype.GlyphIndex, []int) {
+	lr, lc, syl, indic := analyzeIndic(runes, clusters, cfg)
+
+	// Map runes to glyphs and set up the logical-index tracking id per glyph.
+	gl := make([]opentype.GlyphIndex, len(lr))
+	track := make([]int, len(lr))
+	for i, r := range lr {
+		gl[i], _ = font.GlyphIndex(r)
+		track[i] = i
+	}
 	if !indic {
-		return gl, cl // non-Indic run: pass through untouched.
-	}
-	posOf := make(map[int]uint8, len(pos))
-	for i, p := range pos {
-		posOf[start+i] = p
+		return gl, lc // non-Indic run: pass through untouched.
 	}
 
-	// Basic features. rphf is masked to the reph's leading Ra (local index 0)
-	// so a medial Ra+halant conjunct is not turned into a reph.
-	rphfMask := make([]bool, len(gl))
-	if reph {
-		rphfMask[0] = true
-	}
-	basic := []opentype.FeatureApp{
-		{Tag: "locl"}, {Tag: "nukt"}, {Tag: "akhn"},
-		{Tag: "rphf", Positions: rphfMask},
-		{Tag: "rkrf"}, {Tag: "pref"}, {Tag: "blwf"}, {Tag: "half"},
-		{Tag: "pstf"}, {Tag: "vatu"}, {Tag: "cjct"},
-	}
-	gl, cl = g.ApplyMaskedTracked(gl, cl, basic)
+	lpos := syl.poss
 
-	gl, cl = reorderByPos(gl, cl, posOf)
+	// Initial reordering: pre-base matras before the base, the reph Ra at front.
+	reorderIndic(gl, track, func(id int) uint8 { return lpos[id] })
+
+	// Basic features. rphf is masked to the reph Ra; pref to the
+	// pre-base-reordering Ra; the rest run over the whole syllable. Whether rphf
+	// and pref fired drives the final reordering.
+	gl, track = g.ApplyMaskedTracked(gl, track, []opentype.FeatureApp{{Tag: "locl"}, {Tag: "nukt"}, {Tag: "akhn"}})
+	rphfFired := false
+	if syl.reph {
+		gl, track, rphfFired = applyIndicFeature(g, gl, track, "rphf", maskForTrack(track, 0))
+	}
+	gl, track = g.ApplyMaskedTracked(gl, track, []opentype.FeatureApp{{Tag: "rkrf"}})
+	prefFired := false
+	if syl.prefIdx >= 0 {
+		gl, track, prefFired = applyIndicFeature(g, gl, track, "pref", maskForTrack(track, syl.prefIdx))
+	}
+	gl, track = g.ApplyMaskedTracked(gl, track, []opentype.FeatureApp{
+		{Tag: "blwf"}, {Tag: "half"}, {Tag: "pstf"}, {Tag: "vatu"}, {Tag: "cjct"},
+	})
+
+	// Final reordering: a fired reph moves to its per-script slot; a fired
+	// pre-base-reordering Ra moves ahead of the base; everything else keeps its
+	// initial ladder position.
+	reorderIndic(gl, track, func(id int) uint8 {
+		switch {
+		case rphfFired && id == 0:
+			return cfg.rephPos
+		case prefFired && id == syl.prefIdx:
+			return posPreC
+		default:
+			return lpos[id]
+		}
+	})
 
 	// Presentation features. init is masked to the first glyph of the reordered
 	// syllable (a substitution or ligature never empties a non-empty run, so
@@ -394,5 +594,12 @@ func shapeIndicSyllable(g *opentype.GSUB, gl []opentype.GlyphIndex, cl []int, ru
 		{Tag: "init", Positions: initMask}, {Tag: "pres"}, {Tag: "abvs"},
 		{Tag: "blws"}, {Tag: "psts"}, {Tag: "haln"},
 	}
-	return g.ApplyMaskedTracked(gl, cl, appendUser(pres, user))
+	gl, track = g.ApplyMaskedTracked(gl, track, appendUser(pres, user))
+
+	// Map each output glyph back to its source cluster.
+	oc := make([]int, len(gl))
+	for i, t := range track {
+		oc[i] = lc[t]
+	}
+	return gl, oc
 }

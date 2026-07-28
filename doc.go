@@ -54,34 +54,39 @@
 //
 // # Indic
 //
-// Devanagari, Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada and
-// Malayalam are shaped with the HarfBuzz "indic" model (the dev2/bng2/... v2
-// feature set; the old deva/beng/... tags are accepted too and normalized).
-// Each run is split into syllables; within a syllable the base consonant (last
-// consonant) and any reph (a leading Ra + halant) are found, every glyph is
-// assigned a position on a single reorder ladder, the basic GSUB features run in
-// order (locl, nukt, akhn, rphf, rkrf, pref, blwf, half, pstf, vatu, cjct), a
-// stable sort by ladder position performs the reordering (pre-base matras move
-// before the base, the reph moves to its per-script slot), and the presentation
-// features run (init, pres, abvs, blws, psts, haln). GPOS then applies kern,
-// dist, abvm, blwm, mark and mkmk. Character categories come from a table
-// generated from the Unicode Character Database (Indic_Syllabic_Category and
-// Indic_Positional_Category) by cmd/genindic.
+// Devanagari, Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada,
+// Malayalam and Sinhala are shaped with the HarfBuzz "indic" model (the
+// dev2/bng2/... v2 feature set; the old deva/beng/... tags are accepted too and
+// normalized). Each run is split into syllables and shaped in HarfBuzz's two
+// reordering passes:
+//
+//   - Two-part dependent vowels (the Bengali/Tamil/Malayalam/... O and AU signs)
+//     are first decomposed into their canonical components, so each part reaches
+//     its own reorder position.
+//   - The base consonant is found with the script's base-position model
+//     (BASE_POS_LAST for every script but Sinhala, which uses
+//     BASE_POS_LAST_SINHALA), any reph (a leading Ra + halant) is found, and a
+//     defective cluster — one opening with a dependent mark and no base — has a
+//     dotted circle (U+25CC) inserted to carry the marks.
+//   - Initial reordering: a stable sort by ladder position moves pre-base matras
+//     before the base and parks the reph Ra at the front.
+//   - The basic GSUB features run in order (locl, nukt, akhn, rphf masked to the
+//     reph Ra, rkrf, pref masked to the pre-base-reordering Ra, blwf, half,
+//     pstf, vatu, cjct), and whether rphf and pref actually fired is observed by
+//     re-shaping the masked run.
+//   - Final reordering: a fired reph moves to its per-script slot (otherwise the
+//     Ra stays a pre-base consonant) and a fired pre-base-reordering Ra moves
+//     ahead of the base.
+//   - The presentation features run (init, pres, abvs, blws, psts, haln).
+//
+// GPOS then applies kern, dist, abvm, blwm, mark and mkmk. Character categories
+// come from a table generated from the Unicode Character Database
+// (Indic_Syllabic_Category and Indic_Positional_Category) by cmd/genindic.
 //
 // Indic edges deliberately left simple:
 //
-//   - Reordering is modelled as a single stable sort by ladder position rather
-//     than HarfBuzz's separate initial and final reordering passes. This gets
-//     the reph and pre-base-matra placement right for the common cases but does
-//     not reproduce every pre-base-reordering-consonant (pref) or contextual
-//     matra-position adjustment.
-//   - Reph detection is the implicit Ra + halant form; the explicit-repha and
-//     logical-repha (Malayalam) modes are not distinguished, and per-script
-//     base-position variants (Telugu/Kannada BASE_POS_LAST_SINHALA-style) use
-//     the BASE_POS_LAST rule.
-//   - Split matras (a single matra with left and right parts, for example the
-//     Bengali/Tamil O and AU signs) are placed by their primary positional
-//     category and are not decomposed before reordering.
+//   - Reph detection is the implicit Ra + halant form; the explicit-repha (ZWJ)
+//     and logical-repha modes are not separately modelled.
 //   - Only the old (deva) and v2 (dev2) OpenType tags are recognized; a font
 //     that files its features solely under a real script still resolves, since
 //     GSUB/GPOS use the script-agnostic default fallback.
@@ -150,6 +155,8 @@
 // base and a leading repha (R) moves after it. Per-script quirks HarfBuzz
 // special-cases (Sakot handling, split-vowel decomposition, pref/rphf
 // feature-based reordering and dotted-circle insertion for defective clusters)
-// are not reproduced, and the nine dedicated-shaper Indic scripts are routed to
-// the Indic shaper rather than USE.
+// are not reproduced here; the ten dedicated-shaper Indic scripts (Devanagari,
+// Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada, Malayalam and
+// Sinhala), which do reproduce those quirks, are routed to the Indic shaper
+// rather than USE.
 package shape
