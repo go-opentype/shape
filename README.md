@@ -86,6 +86,9 @@ Arabic, Indic/USE runes select their shaper, ...) unless you set
   U+13430–U+1345F (joiners, corner insertions, overlays, segment/enclosure
   delimiters) are parsed into a two-dimensional quadrat tree and laid out
   geometrically, so a run of signs renders as compact blocks.
+- **Hangul** — conjoining jamo (leading/vowel/trailing) are composed into
+  precomposed syllable blocks before shaping, so decomposed Korean input
+  renders as single Hangul glyphs.
 - **Vertical writing mode (CJK tategaki)** — `Options.Vertical` selects the
   `vert`/`vrt2` upright glyph forms and stacks glyphs top-to-bottom using the
   font's vertical metrics (`vmtx`/`VORG`).
@@ -130,8 +133,8 @@ Indic, USE, Egyptian Hieroglyph and Vertical sections.
 Implemented: **Arabic**, the ten dedicated-shaper **Indic** scripts, the
 **Universal Shaping Engine** (Thai, Lao, Khmer, Myanmar, Tibetan, Javanese,
 Balinese, Buginese, Tai Tham, ...), **Egyptian Hieroglyph** quadrat layout,
-**vertical** writing mode, and **Latin/default** (Latin, Cyrillic, Greek,
-CJK horizontal, ...) shaping.
+**Hangul** jamo composition, **vertical** writing mode, and **Latin/default**
+(Latin, Cyrillic, Greek, CJK horizontal, ...) shaping.
 
 Cluster indices are exact for one-to-one substitutions (the Arabic
 positional forms) and best-effort, monotonic, when a substitution changes
@@ -161,9 +164,9 @@ text stack:
   base direction and reordering.
 - **[shape](https://github.com/go-opentype/shape)** (this repo) — the
   complex-script shaper.
-- **[fonts](https://github.com/go-opentype/fonts)** — 36 bundled OFL/BSD
-  font families, per-family lazily `go:embed`-ed, used throughout this
-  repo's real-font tests and examples.
+- **[fonts](https://github.com/go-opentype/fonts)** — 46 bundled OFL/BSD
+  font families (Latin, non-Latin scripts and CJK), per-family lazily
+  `go:embed`-ed, used throughout this repo's real-font tests and examples.
 
 ## License
 
