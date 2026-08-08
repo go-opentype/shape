@@ -7,4 +7,4 @@ require (
 	github.com/go-opentype/opentype v0.5.0
 )
 
-require github.com/go-opentype/fonts v0.5.0
+require github.com/go-opentype/fonts v0.6.0
