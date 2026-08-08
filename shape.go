@@ -28,6 +28,13 @@ type Glyph struct {
 	// 1.0 for ordinary shaping, a fraction for the scaled-down signs of an
 	// Egyptian Hieroglyph quadrat.
 	Scale float64
+	// Invisible marks a glyph a back-end must NOT paint: a
+	// Default_Ignorable_Code_Point (a joiner, a variation selector, a word
+	// joiner, a soft hyphen, the byte-order mark) that shaping did not consume.
+	// Its advances and offsets are already zeroed, so a caller that ignores this
+	// field still lays the run out correctly and only risks painting a stray
+	// .notdef box.
+	Invisible bool
 }
 
 // Options configures a Shape call. The zero value shapes with an automatic base
@@ -67,11 +74,17 @@ func Shape(face *opentype.Face, text string, opts Options) []Glyph {
 	// Compose any conjoining Hangul jamo (L·V·T) into precomposed syllables
 	// before the run is built, so they cmap + shape like ordinary Korean.
 	runes = composeHangul(runes)
+	// The specialised shapers return early, so each hides its own ignorables:
+	// the rule holds for every writing mode, not just the default path.
 	if isEgyptianRun(opts.Script, runes) {
-		return shapeEgyptian(face, runes, opts)
+		out := shapeEgyptian(face, runes, opts)
+		hideIgnorables(out, runes)
+		return out
 	}
 	if opts.Vertical {
-		return shapeVertical(face, runes, opts)
+		out := shapeVertical(face, runes, opts)
+		hideIgnorables(out, runes)
+		return out
 	}
 	font := face.Font()
 	levels := bidi.ResolveLevels(runes, opts.Direction)
@@ -130,6 +143,7 @@ func Shape(face *opentype.Face, text string, opts Options) []Glyph {
 		}
 		out[k] = g
 	}
+	hideIgnorables(out, runes)
 	return out
 }
 
