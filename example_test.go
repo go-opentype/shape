@@ -7,11 +7,11 @@ package shape_test
 import (
 	"fmt"
 
-	"github.com/go-opentype/bidi"
 	"github.com/go-opentype/fonts/goregular"
 	"github.com/go-opentype/fonts/notosansarabic"
 	"github.com/go-opentype/opentype"
 	"github.com/go-opentype/shape"
+	"github.com/go-typeset/bidi"
 )
 
 // ExampleShape shapes an Arabic word, بيت ("house"): beh-yeh-teh. Noto Sans

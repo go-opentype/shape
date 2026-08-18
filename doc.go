@@ -7,7 +7,7 @@
 // (left-to-right) order, ready to blit, applying the three things a naive
 // cmap-then-GSUB pass gets wrong for real text:
 //
-//   - Bidirectional reordering (via github.com/go-opentype/bidi): resolve the
+//   - Bidirectional reordering (via github.com/go-typeset/bidi): resolve the
 //     UAX #9 embedding levels and lay the glyphs out left-to-right, so a
 //     right-to-left Arabic run is emitted in the order it is drawn.
 //   - Arabic cursive joining: each letter's Unicode joining form (isolated,

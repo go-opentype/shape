@@ -8,8 +8,8 @@ import (
 	"math"
 	"strings"
 
-	"github.com/go-opentype/bidi"
 	"github.com/go-opentype/opentype"
+	"github.com/go-typeset/bidi"
 )
 
 // Glyph is one positioned glyph of a shaped run, in visual (left-to-right)

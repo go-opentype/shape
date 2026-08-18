@@ -8,8 +8,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/go-opentype/bidi"
 	"github.com/go-opentype/opentype"
+	"github.com/go-typeset/bidi"
 )
 
 func TestResolveScript(t *testing.T) {
