@@ -3,7 +3,7 @@ module github.com/go-opentype/shape
 go 1.26.4
 
 require (
-	github.com/go-opentype/opentype v0.12.0
+	github.com/go-opentype/opentype v0.13.0
 	github.com/go-typeset/bidi v0.3.0
 )
 
