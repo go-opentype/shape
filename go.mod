@@ -4,7 +4,7 @@ go 1.27.1
 
 require (
 	github.com/go-opentype/fonts v0.14.0
-	github.com/go-opentype/opentype v0.22.0
+	github.com/go-opentype/opentype v0.25.0
 	github.com/go-typeset/bidi v0.3.1
 )
 
